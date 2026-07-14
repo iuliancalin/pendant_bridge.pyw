@@ -3,47 +3,118 @@
 #include "esp_log.h"
 
 // ============================================================================
-// CONFIGURATION & SPEEDS
+// CONFIGURATION (LOCKED USER VALUES & MACHINE TRAVEL)
 // ============================================================================
+const float MAX_TRAVEL_X = 499.0;
+const float MAX_TRAVEL_Y = 499.0;
+const float MAX_TRAVEL_Z = 137.0;
+
 enum JogSpeedMode { PRECISE, NORMAL, RAPID };
 JogSpeedMode currentSpeedMode = NORMAL;
 
-uint16_t getXYFeed() { return (currentSpeedMode == RAPID) ? 5000 : (currentSpeedMode == NORMAL ? 2000 : 1000); }
-uint16_t getZFeed()  { return (currentSpeedMode == RAPID) ? 5000 : (currentSpeedMode == NORMAL ? 2000 : 1000); }
+// Feedrates (mm/min)
+uint16_t getFeedrate() { 
+  switch (currentSpeedMode) {
+    case RAPID:   return 5000;
+    case NORMAL:  return 2000;
+    case PRECISE: return 1000;
+    default:      return 2000;
+  }
+}
+
+// Single-tap distances (mm)
+float getXYStep() { 
+  switch (currentSpeedMode) {
+    case RAPID:   return 20.0;
+    case NORMAL:  return 5.0;
+    case PRECISE: return 0.5;
+    default:      return 5.0;
+  }
+}
+
+float getZStep() { 
+  switch (currentSpeedMode) {
+    case RAPID:   return 20.0;
+    case NORMAL:  return 5.0;
+    case PRECISE: return 0.1;
+    default:      return 5.0;
+  }
+}
 
 struct JogState {
   bool active = false;
   uint8_t activeKeycode = 0;
+  float dx = 0;
+  float dy = 0;
+  float dz = 0;
+  unsigned long pressStartTime = 0;
+  bool tapPulseSent = false;
+  bool continuousStarted = false;
 };
 
 JogState currentJog;
 EspUsbHost usbHost;
 
 // ============================================================================
-// JOG ENGINE
+// gSender NATIVE JOG ENGINE
 // ============================================================================
 void startDirectionalJog(uint8_t keycode, float dx, float dy, float dz) {
-  if (currentJog.active) return;
-
-  uint16_t feed = (dz != 0) ? getZFeed() : getXYFeed();
-
-  String contCmd = "$J=G91";
-  if (dx != 0) contCmd += " X" + String(dx * 1000.0, 1);
-  if (dy != 0) contCmd += " Y" + String(dy * 1000.0, 1);
-  if (dz != 0) contCmd += " Z" + String(dz * 200.0, 1);
-  contCmd += " F" + String(feed);
-
-  Serial.println(contCmd);
+  if (currentJog.active && currentJog.activeKeycode == keycode) return;
 
   currentJog.active = true;
   currentJog.activeKeycode = keycode;
+  currentJog.dx = dx;
+  currentJog.dy = dy;
+  currentJog.dz = dz;
+  currentJog.pressStartTime = millis();
+  currentJog.tapPulseSent = false;
+  currentJog.continuousStarted = false;
 }
 
 void stopJog(uint8_t keycode) {
   if (currentJog.active && currentJog.activeKeycode == keycode) {
-    Serial.println("JOG_CANCEL");
+    // Immediate stop on release if in continuous mode
+    if (currentJog.continuousStarted) {
+      Serial.println("JOG_CANCEL");
+    }
     currentJog.active = false;
     currentJog.activeKeycode = 0;
+  }
+}
+
+void processJogLogic() {
+  if (!currentJog.active) return;
+
+  unsigned long holdDuration = millis() - currentJog.pressStartTime;
+
+  // 1. Fire single tap move immediately
+  if (!currentJog.tapPulseSent) {
+    uint16_t feed = getFeedrate();
+    float step = (currentJog.dz != 0) ? getZStep() : getXYStep();
+
+    String cmd = "$J=G91";
+    if (currentJog.dx != 0) cmd += " X" + String(currentJog.dx * step, 2);
+    if (currentJog.dy != 0) cmd += " Y" + String(currentJog.dy * step, 2);
+    if (currentJog.dz != 0) cmd += " Z" + String(currentJog.dz * step, 2);
+    cmd += " F" + String(feed);
+
+    Serial.println(cmd);
+    currentJog.tapPulseSent = true;
+    return;
+  }
+
+  // 2. If held >180ms, switch to full-travel continuous move (like gSender screen buttons)
+  if (holdDuration >= 180 && !currentJog.continuousStarted) {
+    uint16_t feed = getFeedrate();
+
+    String cmd = "$J=G91";
+    if (currentJog.dx != 0) cmd += " X" + String(currentJog.dx * MAX_TRAVEL_X, 1);
+    if (currentJog.dy != 0) cmd += " Y" + String(currentJog.dy * MAX_TRAVEL_Y, 1);
+    if (currentJog.dz != 0) cmd += " Z" + String(currentJog.dz * MAX_TRAVEL_Z, 1);
+    cmd += " F" + String(feed);
+
+    Serial.println(cmd);
+    currentJog.continuousStarted = true;
   }
 }
 
@@ -89,12 +160,10 @@ void handleKeypress(uint8_t keycode, uint8_t modifier, bool isPressed) {
 // MAIN SETUP & LOOP
 // ============================================================================
 void setup() {
-  esp_log_level_set("*", ESP_LOG_NONE); // Suppress low-level system logs
+  esp_log_level_set("*", ESP_LOG_NONE);
   
   Serial.begin(115200);
   delay(1500);
-
-  Serial.println(">>> PENDANT BRIDGE READY <<<");
 
   usbHost.onKeyboard([](const EspUsbHostKeyboardEvent &event) {
     handleKeypress(event.keycode, event.modifiers, event.pressed);
@@ -104,5 +173,6 @@ void setup() {
 }
 
 void loop() {
-  delay(10);
+  processJogLogic();
+  delay(2);
 }
