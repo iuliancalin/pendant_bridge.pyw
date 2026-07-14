@@ -5,10 +5,10 @@ import time
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-ESP32_PORT     = 'COM8'                      # ESP32 Pendant port
-CNC_PORT       = 'COM10'                     # CNC Machine port in gSender
+ESP32_PORT     = 'COM6'                      # ESP32 Pendant port
+CNC_PORT       = 'COM4'                     # CNC Machine port in gSender
 BAUD_RATE      = 115200
-GSENDER_SERVER = "http://192.168.178.32:8000" # gSender Server address
+GSENDER_SERVER = "http://10.153.194.155:8000" # gSender Server address
 
 sio = socketio.Client()
 
